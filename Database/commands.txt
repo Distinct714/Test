@@ -1,0 +1,245 @@
+PART ONE (WEEK 4 AND 5)
+
+CREATING FIELDS/COLUMNS ON TABLE    
+
+CREATE TABLE borrowers (
+    borrower_id SERIAL PRIMARY KEY,
+    borrower_no VARCHAR(20) NOT NULL UNIQUE,
+    full_name VARCHAR(100) NOT NULL,
+    borrower_type VARCHAR(20) NOT NULL CHECK (borrower_type IN ('Student', 'Faculty', 'Staff'))
+);
+
+CREATE TABLE equipment (
+    equipment_id SERIAL PRIMARY KEY,
+    property_no VARCHAR(30) NOT NULL UNIQUE,
+    equipment_name VARCHAR(100) NOT NULL,
+    quantity_available INT NOT NULL DEFAULT 0 CHECK (quantity_available >= 0)
+);
+
+CREATE TABLE borrow_transactions (
+    borrow_id SERIAL PRIMARY KEY,
+    borrower_id INT NOT NULL REFERENCES borrowers (borrower_id) ON DELETE RESTRICT,
+    borrow_date DATE NOT NULL DEFAULT CURRENT_DATE,
+    due_date DATE NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'Borrowed' CHECK (status IN ('Borrowed', 'Returned', 'Overdue', 'Cancelled')), 
+    CHECK (due date >= borrow_date)
+);
+
+CREATE TABLE borrow_items (
+    borrow_item_id SERIAL PRIMARY KEY,
+    borrow_id INT NOT NULL REFERENCES borrow_transactions (borrow_id) ON DELETE CASCADE,
+    equipment_id INT NOT NULL REFERENCES equipment (equipment_id) ON DELETE RESTRICT,
+    quantity INT NOT NULL CHECK (quantity > 0),
+    UNIQUE (borrow_id, equipment_id)
+);
+
+VALUES THAT WILL INSERT TO TABLE
+
+-- Data for borrowers
+INSERT INTO borrowers (borrower_no, full_name, borrower_type) VALUES 
+('STU-2026-001', 'Joshua Bote', 'Student'),
+('STU-2026-002', 'Laurence Abarquez', 'Student'),
+('FAC-2026-101', 'Dr. Melani Castillo', 'Faculty'),
+('FAC-2026-102', 'Prof. Aris Dela Rea', 'Faculty'),
+('STF-2026-201', 'Sir Noli', 'Staff');
+
+-- Data for Equipment Items
+INSERT INTO equipment (property_no, equipment_name, quantity_available) VALUES 
+('PROP-LAP-01', 'Asus Vivobook Laptop', 15),
+('PROP-PROJ-02', 'Epson Portable HDMI Projector', 6), 
+('PROP-CAM-83', 'Canon EOS DSLR Camera Kit', 2),
+('PROP-CAB-85', 'USB-C / HDMI Adapter Hub', 30), 
+('PROP-CALC-86', 'Casio Scientific Calculator', 20), 
+('PROP-SPK-07', 'Portable Bluetooth PA Speaker', 5),
+('PROP-MIC-07', 'Wireless Lapel Microphone Set', 8), 
+('PROP-PTR-88', 'Wireless Mouse', 12);
+
+-- Data for Borrow Transactions
+INSERT INTO borrow_transactions (borrower_id, borrow_date, due date, status) VALUES 
+(1, '2026-09-01', '2026-09-08', 'Returned'), 
+(2, '2026-09-10', '2026-09-17', 'Borrowed'), 
+(3, '2026-09-12', '2026-09-19', 'Borrowed'), 
+(4, '2026-09-05', '2026-09-12', 'Overdue');
+
+-- Data for Borrow Items
+INSERT INTO borrow_items (borrow_id, equipment_id, quantity) VALUES 
+(1, 1, 1), -- Transaction 1: 1 Asus Vivobook Laptop
+(1, 4, 1), -- Transaction 1: 1 USB-C / HDMI Adapter Hub
+(2, 2, 1), -- Transaction 2: 1 Epson Portable HDMI Projector
+(2, 6, 1), -- Transaction 2: 1 Portable Bluetooth PA Speaker
+(3, 3, 1), -- Transaction 3: 1 Canon DSLR Camera Kit
+(3, 7, 2), -- Transaction 3: 2 Wireless Lapel Microphone Set 
+(3, 8, 1), -- Transaction 3: 1 Wireless Mouse
+(4, 5, 1); -- Transaction 4: 1 Casio Scientific Calculator
+
+==================================================================
+
+NOTE: RUN ROLLBACK; AFTER TRIGGER OCCURS
+
+PART FOUR
+
+TESTING SCENARIO:
+
+-- Test 1. Successful borrowing transaction
+
+BEGIN;
+
+INSERT INTO borrow_transactions (borrower_id, due_date, status) VALUES 
+(1, CURRENT_DATE + INTERVAL '7 days', 'Borrowed') 
+RETURNING borrow_id;
+
+INSERT INTO borrow_items (borrow_id, equipment_id, quantity) VALUES 
+(5, 2, 1);
+
+COMMIT;
+
+-- Test 2. Failed borrowing transaction
+
+BEGIN;
+
+INSERT INTO borrow_transactions (borrower_id, due_date, status) 
+VALUES (1, CURRENT_DATE + INTERVAL '7 days', 'Borrowed');
+
+INSERT INTO borrow_items (borrow_id, equipment_id, quantity) 
+VALUES (9, 2, -5);
+
+ROLLBACK;
+
+-- Test 3. Duplicate property number
+INSERT INTO equipment (property_no, equipment_name, quantity_available) 
+VALUES ('PROP-LAP-01', 'Asus Vivobook Laptop', 15);
+
+-- Test 4. Negative available quantity
+INSERT INTO equipment (property_no, equipment_name, quantity_available) 
+VALUES ('PROP-TEST-02', 'Faulty Stock Item', -3);
+
+-- Test 5. Invalid foreign key
+INSERT INTO borrow_transactions (borrower_id, due_date, status) 
+VALUES (999, CURRENT_DATE + INTERVAL '7 days', 'Borrowed');
+
+-- Test 6. Duplicate equipment within one transaction
+INSERT INTO borrow_items (borrow_id, equipment_id, quantity) VALUES (1, 2, 1);
+INSERT INTO borrow_items (borrow_id, equipment_id, quantity) VALUES (1, 2, 1);
+
+
+========================================================================================================
+
+PART FIVE
+
+CREATE OR REPLACE FUNCTION fn_total_borrowed(equipment_id INT)
+RETURNS INT AS $$
+DECLARE
+    total_qty INT;
+BEGIN
+    SELECT COALESCE(SUM(bi.quantity), 0) INTO total_qty
+    FROM borrow_items bi
+    JOIN borrow_transactions t ON bi.borrow_id = t.borrow_id
+    WHERE bi.equipment_id = fn_total_borrowed.equipment_id AND t.status = 'Borrowed';
+    
+    RETURN total_qty;
+END;
+$$ LANGUAGE plpgsql;
+
+
+CREATE OR REPLACE FUNCTION fn_check_equipment_availability(equipment_id INT, requested_quantity INT)
+RETURNS BOOLEAN AS $$
+DECLARE
+    avail INT;
+BEGIN
+    SELECT quantity_available INTO avail FROM equipment WHERE equipment.equipment_id = fn_check_equipment_availability.equipment_id;
+    IF FOUND AND avail >= requested_quantity THEN
+        RETURN TRUE;
+    END IF;
+    RETURN FALSE;
+END;
+$$ LANGUAGE plpgsql;
+
+
+CREATE OR REPLACE FUNCTION trg_validate_borrow_quantity_func()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF NOT fn_check_equipment_availability(NEW.equipment_id, NEW.quantity) THEN
+        RAISE EXCEPTION 'Operation rejected: Requested quantity (%) exceeds available stock for equipment ID %', NEW.quantity, NEW.equipment_id;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_validate_borrow_quantity ON borrow_items;
+CREATE TRIGGER trg_validate_borrow_quantity
+BEFORE INSERT OR UPDATE ON borrow_items
+FOR EACH ROW
+EXECUTE FUNCTION trg_validate_borrow_quantity_func();
+
+
+CREATE OR REPLACE FUNCTION trg_borrow_items_audit_func()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF (TG_OP = 'INSERT') THEN
+        INSERT INTO borrow_items_audit (borrow_item_id, operation_type, new_borrow_id, new_equipment_id, new_quantity)
+        VALUES (NEW.borrow_item_id, 'INSERT', NEW.borrow_id, NEW.equipment_id, NEW.quantity);
+        RETURN NEW;
+    ELSIF (TG_OP = 'UPDATE') THEN
+        INSERT INTO borrow_items_audit (borrow_item_id, operation_type, old_borrow_id, old_equipment_id, old_quantity, new_borrow_id, new_equipment_id, new_quantity)
+        VALUES (OLD.borrow_item_id, 'UPDATE', OLD.borrow_id, OLD.equipment_id, OLD.quantity, NEW.borrow_id, NEW.equipment_id, NEW.quantity);
+        RETURN NEW;
+    ELSIF (TG_OP = 'DELETE') THEN
+        INSERT INTO borrow_items_audit (borrow_item_id, operation_type, old_borrow_id, old_equipment_id, old_quantity)
+        VALUES (OLD.borrow_item_id, 'DELETE', OLD.borrow_id, OLD.equipment_id, OLD.quantity);
+        RETURN OLD;
+    END IF;
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_borrow_items_audit ON borrow_items;
+CREATE TRIGGER trg_borrow_items_audit
+AFTER INSERT OR UPDATE OR DELETE ON borrow_items
+FOR EACH ROW
+EXECUTE FUNCTION trg_borrow_items_audit_func();
+
+
+CREATE TABLE borrow_items_audit (
+    audit_id SERIAL PRIMARY KEY,
+    borrow_item_id INT,
+    operation_type VARCHAR(10),
+    old_borrow_id INT,
+    old_equipment_id INT,
+    old_quantity INT,
+    new_borrow_id INT,
+    new_equipment_id INT,
+    new_quantity INT,
+    action_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+
+TESTING SCENARIO:
+
+-- Test Scenario 1: Insert a borrowing item with a valid quantity
+INSERT INTO borrow_items (borrow_id, equipment_id, quantity) 
+VALUES (9, 2, 2);
+
+SELECT * FROM borrow_items_audit ORDER BY action_timestamp DESC LIMIT 1;
+
+-- Test Scenario 2: Insert a borrowing item exceeding available stock
+INSERT INTO borrow_items (borrow_id, equipment_id, quantity) 
+VALUES (9, 2, 9999);
+
+-- Test Scenario 3: Update a borrowing item's quantity
+UPDATE borrow_items 
+SET quantity = 3 
+WHERE borrow_id = 9 AND equipment_id = 2;
+
+SELECT * FROM borrow_items_audit WHERE operation_type = 'UPDATE' ORDER BY action_timestamp DESC LIMIT 1;    
+
+-- Test Scenario 4: Delete a borrowing item
+DELETE FROM borrow_items 
+WHERE borrow_id = 9 AND equipment_id = 2;
+
+SELECT * FROM borrow_items_audit WHERE operation_type = 'DELETE' ORDER BY action_timestamp DESC LIMIT 1;
+
+-- Test Scenario 5: Verify trigger automation
+INSERT INTO borrow_items (borrow_id, equipment_id, quantity) 
+VALUES (9, 1, 1);
+
+SELECT * FROM borrow_items_audit ORDER BY action_timestamp DESC LIMIT 1;
